@@ -1,266 +1,1097 @@
-import sqlite3
-from datetime import date, timedelta
 import streamlit as st
 import pandas as pd
+import numpy as np
+from datetime import date, datetime, timedelta
+import plotly.express as px
+import os
 
-DB_PATH = "hotel.db"
+# ============================================================
+# CẤU HÌNH TRANG
+# ============================================================
 
-st.set_page_config(page_title="Quản lý khách sạn", page_icon="🏨", layout="wide")
+st.set_page_config(
+    page_title="Hotel Management System",
+    page_icon="🏨",
+    layout="wide",
+    initial_sidebar_state="expanded"
+)
 
-def connect():
-    conn = sqlite3.connect(DB_PATH, check_same_thread=False)
-    conn.row_factory = sqlite3.Row
-    return conn
+# ============================================================
+# CSS GIAO DIỆN
+# ============================================================
 
-def init_db():
-    with connect() as conn:
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS rooms (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                room_number TEXT UNIQUE NOT NULL,
-                room_type TEXT NOT NULL,
-                price REAL NOT NULL,
-                status TEXT NOT NULL DEFAULT 'Trống'
-            )
-        """)
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS bookings (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                guest_name TEXT NOT NULL,
-                phone TEXT NOT NULL,
-                room_id INTEGER NOT NULL,
-                check_in TEXT NOT NULL,
-                check_out TEXT NOT NULL,
-                guests INTEGER NOT NULL DEFAULT 1,
-                total REAL NOT NULL DEFAULT 0,
-                status TEXT NOT NULL DEFAULT 'Đã đặt',
-                FOREIGN KEY(room_id) REFERENCES rooms(id)
-            )
-        """)
+st.markdown("""
+<style>
+    .main {
+        background-color: #f5f7fa;
+    }
 
-def query(sql, params=()):
-    with connect() as conn:
-        return pd.read_sql_query(sql, conn, params=params)
+    .hotel-title {
+        font-size: 32px;
+        font-weight: 700;
+        color: #17365D;
+        margin-bottom: 5px;
+    }
 
-def execute(sql, params=()):
-    with connect() as conn:
-        cur = conn.execute(sql, params)
-        conn.commit()
-        return cur.lastrowid
+    .hotel-subtitle {
+        color: #6b7280;
+        font-size: 15px;
+        margin-bottom: 25px;
+    }
 
-init_db()
+    .metric-card {
+        background-color: white;
+        padding: 20px;
+        border-radius: 12px;
+        box-shadow: 0 2px 8px rgba(0,0,0,0.08);
+        text-align: center;
+    }
 
-st.title("🏨 HỆ THỐNG QUẢN LÝ KHÁCH SẠN")
-st.caption("Quản lý phòng, đặt phòng, khách hàng và doanh thu — dữ liệu lưu trong tệp hotel.db.")
+    .metric-title {
+        color: #6b7280;
+        font-size: 14px;
+    }
 
-# Cập nhật trạng thái phòng theo booking đang ở
-today = date.today().isoformat()
-with connect() as conn:
-    conn.execute("""
-        UPDATE rooms SET status = 'Trống'
-        WHERE id NOT IN (
-            SELECT room_id FROM bookings
-            WHERE status IN ('Đã đặt', 'Đang ở')
-              AND check_in <= ? AND check_out > ?
+    .metric-value {
+        color: #17365D;
+        font-size: 28px;
+        font-weight: bold;
+    }
+
+    .section-title {
+        font-size: 22px;
+        font-weight: 700;
+        color: #17365D;
+        margin-top: 20px;
+        margin-bottom: 15px;
+    }
+
+    div[data-testid="stSidebar"] {
+        background-color: #17365D;
+    }
+
+    div[data-testid="stSidebar"] * {
+        color: white;
+    }
+</style>
+""", unsafe_allow_html=True)
+
+
+# ============================================================
+# DỮ LIỆU MẪU
+# ============================================================
+
+ROOM_DATA = [
+    [501, "Deluxe", 2, 1800000, "Available", "Clean", ""],
+    [502, "Deluxe", 2, 1800000, "Occupied", "Clean", ""],
+    [503, "Deluxe", 2, 1800000, "Reserved", "Clean", ""],
+    [504, "Deluxe", 2, 1800000, "Available", "Dirty", ""],
+    [505, "Premier", 2, 2200000, "Occupied", "Clean", ""],
+    [506, "Premier", 3, 2200000, "Available", "Clean", ""],
+    [507, "Premier", 3, 2200000, "Maintenance", "Out of Order", ""],
+    [508, "Suite", 4, 3500000, "Occupied", "Clean", ""],
+
+    [601, "Deluxe", 2, 1800000, "Available", "Clean", ""],
+    [602, "Deluxe", 2, 1800000, "Occupied", "Clean", ""],
+    [603, "Premier", 3, 2200000, "Reserved", "Clean", ""],
+    [604, "Premier", 3, 2200000, "Available", "Clean", ""],
+    [605, "Suite", 4, 3500000, "Occupied", "Clean", ""],
+    [606, "Suite", 4, 3500000, "Available", "Dirty", ""],
+
+    [701, "Deluxe", 2, 1800000, "Occupied", "Clean", ""],
+    [702, "Deluxe", 2, 1800000, "Available", "Clean", ""],
+    [703, "Premier", 3, 2200000, "Reserved", "Clean", ""],
+    [704, "Premier", 3, 2200000, "Available", "Clean", ""],
+    [705, "Suite", 4, 3500000, "Occupied", "Clean", ""],
+    [706, "Suite", 4, 3500000, "Available", "Clean", ""],
+]
+
+ROOM_COLUMNS = [
+    "Room",
+    "Room Type",
+    "Capacity",
+    "Price",
+    "Status",
+    "Housekeeping",
+    "Image"
+]
+
+CUSTOMER_DATA = [
+    ["CUS001", "Nguyễn Minh Anh", "0901234567", "Vietnam", "minhanh@email.com", "VIP", "images/guest_01.jpg"],
+    ["CUS002", "Trần Hoàng Nam", "0912345678", "Vietnam", "hoangnam@email.com", "Regular", "images/guest_02.jpg"],
+    ["CUS003", "Lê Thu Hà", "0923456789", "Vietnam", "thuha@email.com", "Regular", "images/guest_03.jpg"],
+    ["CUS004", "John Smith", "+1 202 555 0101", "USA", "johnsmith@email.com", "VIP", "images/guest_04.jpg"],
+    ["CUS005", "Emma Wilson", "+44 7700 900123", "UK", "emma@email.com", "Regular", "images/guest_05.jpg"],
+    ["CUS006", "Phạm Quốc Bảo", "0934567890", "Vietnam", "quocbao@email.com", "Regular", "images/guest_06.jpg"],
+]
+
+CUSTOMER_COLUMNS = [
+    "Customer ID",
+    "Full Name",
+    "Phone",
+    "Nationality",
+    "Email",
+    "Customer Type",
+    "Image"
+]
+
+BOOKING_DATA = [
+    ["BK001", "CUS001", "Nguyễn Minh Anh", 502, "Deluxe",
+     date(2026, 9, 27), date(2026, 9, 30), 3, 1800000, "Checked-in"],
+
+    ["BK002", "CUS002", "Trần Hoàng Nam", 505, "Premier",
+     date(2026, 9, 28), date(2026, 10, 1), 3, 2200000, "Checked-in"],
+
+    ["BK003", "CUS003", "Lê Thu Hà", 503, "Deluxe",
+     date(2026, 10, 2), date(2026, 10, 5), 3, 1800000, "Reserved"],
+
+    ["BK004", "CUS004", "John Smith", 508, "Suite",
+     date(2026, 9, 26), date(2026, 9, 29), 3, 3500000, "Checked-out"],
+
+    ["BK005", "CUS005", "Emma Wilson", 603, "Premier",
+     date(2026, 10, 5), date(2026, 10, 8), 3, 2200000, "Reserved"],
+
+    ["BK006", "CUS006", "Phạm Quốc Bảo", 701, "Deluxe",
+     date(2026, 9, 25), date(2026, 9, 27), 2, 1800000, "Checked-out"],
+]
+
+BOOKING_COLUMNS = [
+    "Booking ID",
+    "Customer ID",
+    "Customer",
+    "Room",
+    "Room Type",
+    "Check-in",
+    "Check-out",
+    "Nights",
+    "Price/Night",
+    "Status"
+]
+
+HOUSEKEEPING_DATA = [
+    [501, "Deluxe", "Clean", "Lan", "09:00", "Completed"],
+    [502, "Deluxe", "Clean", "Mai", "09:15", "Completed"],
+    [503, "Deluxe", "Clean", "Hương", "09:30", "Completed"],
+    [504, "Deluxe", "Dirty", "Lan", "10:00", "In Progress"],
+    [505, "Premier", "Clean", "Mai", "10:15", "Completed"],
+    [506, "Premier", "Clean", "Hương", "10:30", "Completed"],
+    [507, "Premier", "Out of Order", "Lan", "N/A", "Maintenance"],
+    [508, "Suite", "Clean", "Mai", "11:00", "Completed"],
+]
+
+HOUSEKEEPING_COLUMNS = [
+    "Room",
+    "Room Type",
+    "Room Status",
+    "Assigned Staff",
+    "Time",
+    "Cleaning Status"
+]
+
+
+# ============================================================
+# SESSION STATE
+# ============================================================
+
+if "rooms" not in st.session_state:
+    st.session_state.rooms = pd.DataFrame(ROOM_DATA, columns=ROOM_COLUMNS)
+
+if "customers" not in st.session_state:
+    st.session_state.customers = pd.DataFrame(
+        CUSTOMER_DATA,
+        columns=CUSTOMER_COLUMNS
+    )
+
+if "bookings" not in st.session_state:
+    st.session_state.bookings = pd.DataFrame(
+        BOOKING_DATA,
+        columns=BOOKING_COLUMNS
+    )
+
+if "housekeeping" not in st.session_state:
+    st.session_state.housekeeping = pd.DataFrame(
+        HOUSEKEEPING_DATA,
+        columns=HOUSEKEEPING_COLUMNS
+    )
+
+
+rooms = st.session_state.rooms
+customers = st.session_state.customers
+bookings = st.session_state.bookings
+housekeeping = st.session_state.housekeeping
+
+
+# ============================================================
+# SIDEBAR
+# ============================================================
+
+with st.sidebar:
+
+    st.markdown("## 🏨 HOTEL SYSTEM")
+    st.markdown("---")
+
+    menu = st.radio(
+        "MENU",
+        [
+            "📊 Dashboard",
+            "🛏️ Quản lý phòng",
+            "👤 Quản lý khách hàng",
+            "📅 Quản lý đặt phòng",
+            "🧹 Housekeeping",
+            "💰 Doanh thu",
+        ]
+    )
+
+    st.markdown("---")
+    st.caption("Hotel Management System")
+    st.caption("Demo Version 1.0")
+
+
+# ============================================================
+# HEADER
+# ============================================================
+
+st.markdown(
+    '<div class="hotel-title">🏨 HOTEL MANAGEMENT SYSTEM</div>',
+    unsafe_allow_html=True
+)
+
+st.markdown(
+    '<div class="hotel-subtitle">'
+    'Hệ thống quản lý phòng và vận hành khách sạn'
+    '</div>',
+    unsafe_allow_html=True
+)
+
+
+# ============================================================
+# DASHBOARD
+# ============================================================
+
+if menu == "📊 Dashboard":
+
+    st.markdown(
+        '<div class="section-title">📊 Tổng quan khách sạn</div>',
+        unsafe_allow_html=True
+    )
+
+    total_rooms = len(rooms)
+    available_rooms = len(
+        rooms[rooms["Status"] == "Available"]
+    )
+    occupied_rooms = len(
+        rooms[rooms["Status"] == "Occupied"]
+    )
+    reserved_rooms = len(
+        rooms[rooms["Status"] == "Reserved"]
+    )
+
+    occupancy_rate = (
+        occupied_rooms / total_rooms * 100
+        if total_rooms > 0 else 0
+    )
+
+    revenue = (
+        bookings["Nights"] * bookings["Price/Night"]
+    ).sum()
+
+    col1, col2, col3, col4, col5 = st.columns(5)
+
+    with col1:
+        st.metric("🏨 Tổng số phòng", total_rooms)
+
+    with col2:
+        st.metric("🟢 Phòng trống", available_rooms)
+
+    with col3:
+        st.metric("🔴 Đang có khách", occupied_rooms)
+
+    with col4:
+        st.metric("🟡 Đã đặt", reserved_rooms)
+
+    with col5:
+        st.metric(
+            "📈 Công suất",
+            f"{occupancy_rate:.1f}%"
         )
-        AND status != 'Bảo trì'
-    """, (today, today))
-    conn.execute("""
-        UPDATE rooms SET status = 'Đang sử dụng'
-        WHERE id IN (
-            SELECT room_id FROM bookings
-            WHERE status = 'Đang ở' AND check_in <= ? AND check_out > ?
+
+    st.markdown("---")
+
+    col1, col2 = st.columns(2)
+
+    with col1:
+
+        st.markdown("### Trạng thái phòng")
+
+        status_count = (
+            rooms["Status"]
+            .value_counts()
+            .reset_index()
         )
-        AND status != 'Bảo trì'
-    """, (today, today))
-    conn.commit()
 
-rooms = query("SELECT * FROM rooms")
-bookings = query("""
-    SELECT b.id, b.guest_name AS 'Khách hàng', b.phone AS 'Số điện thoại',
-           r.room_number AS 'Phòng', r.room_type AS 'Loại phòng',
-           b.check_in AS 'Ngày nhận', b.check_out AS 'Ngày trả',
-           b.guests AS 'Số khách', b.total AS 'Tổng tiền', b.status AS 'Trạng thái'
-    FROM bookings b JOIN rooms r ON b.room_id = r.id
-    ORDER BY b.id DESC
-""")
+        status_count.columns = [
+            "Status",
+            "Number"
+        ]
 
-total_rooms = len(rooms)
-vacant = int((rooms["status"] == "Trống").sum()) if total_rooms else 0
-occupied = int((rooms["status"] == "Đang sử dụng").sum()) if total_rooms else 0
-reserved = int((rooms["status"] == "Đã đặt").sum()) if total_rooms else 0
-revenue = float(query("SELECT COALESCE(SUM(total),0) AS amount FROM bookings WHERE status IN ('Đang ở','Đã trả')").iloc[0]["amount"])
+        fig = px.pie(
+            status_count,
+            names="Status",
+            values="Number",
+            hole=0.45,
+            title="Room Status"
+        )
 
-m1, m2, m3, m4, m5 = st.columns(5)
-m1.metric("Tổng số phòng", total_rooms)
-m2.metric("Phòng trống", vacant)
-m3.metric("Đang sử dụng", occupied)
-m4.metric("Đã đặt", reserved)
-m5.metric("Doanh thu ghi nhận", f"{revenue:,.0f} đ")
+        st.plotly_chart(
+            fig,
+            use_container_width=True
+        )
 
-tabs = st.tabs(["📊 Tổng quan", "🛏️ Quản lý phòng", "📝 Đặt phòng", "👥 Khách hàng & lưu trú"])
+    with col2:
 
-with tabs[0]:
-    left, right = st.columns(2)
-    with left:
-        st.subheader("Tình trạng phòng")
-        if total_rooms:
-            status_counts = rooms["status"].value_counts().rename_axis("Trạng thái").reset_index(name="Số phòng")
-            st.bar_chart(status_counts.set_index("Trạng thái"))
-        else:
-            st.info("Chưa có phòng. Hãy thêm phòng trong mục Quản lý phòng.")
-    with right:
-        st.subheader("Đặt phòng gần đây")
-        if bookings.empty:
-            st.info("Chưa có lượt đặt phòng.")
-        else:
-            st.dataframe(bookings.drop(columns=["id"]).head(8), use_container_width=True, hide_index=True)
+        st.markdown("### Loại phòng")
 
-with tabs[1]:
-    st.subheader("Danh sách phòng")
-    if rooms.empty:
-        st.info("Chưa có phòng. Thêm phòng bằng biểu mẫu bên dưới.")
-    else:
-        st.dataframe(rooms, use_container_width=True, hide_index=True)
+        room_type = (
+            rooms["Room Type"]
+            .value_counts()
+            .reset_index()
+        )
 
-    st.markdown("### Thêm phòng")
-    with st.form("add_room_form", clear_on_submit=True):
-        c1, c2, c3 = st.columns(3)
-        room_number = c1.text_input("Số phòng (ví dụ 101)")
-        room_type = c2.selectbox("Loại phòng", ["Phòng đơn", "Phòng đôi", "Phòng gia đình", "Phòng VIP"])
-        price = c3.number_input("Giá phòng / đêm (VNĐ)", min_value=0, value=500000, step=50000)
-        add_room = st.form_submit_button("➕ Thêm phòng", use_container_width=True)
-        if add_room:
-            if not room_number.strip():
-                st.error("Vui lòng nhập số phòng.")
-            else:
-                try:
-                    execute("INSERT INTO rooms(room_number, room_type, price, status) VALUES(?,?,?,'Trống')",
-                            (room_number.strip(), room_type, price))
-                    st.success(f"Đã thêm phòng {room_number.strip()}.")
-                    st.rerun()
-                except sqlite3.IntegrityError:
-                    st.error("Số phòng đã tồn tại.")
+        room_type.columns = [
+            "Room Type",
+            "Number"
+        ]
 
-    if not rooms.empty:
-        st.markdown("### Chỉnh sửa / xóa phòng")
-        room_map = {f"{r['room_number']} — {r['room_type']}": int(r["id"]) for _, r in rooms.iterrows()}
-        chosen_label = st.selectbox("Chọn phòng", list(room_map.keys()), key="edit_room_select")
-        chosen_id = room_map[chosen_label]
-        selected = rooms[rooms["id"] == chosen_id].iloc[0]
-        with st.form("edit_room_form"):
-            e1, e2, e3 = st.columns(3)
-            new_number = e1.text_input("Số phòng", value=str(selected["room_number"]))
-            types = ["Phòng đơn", "Phòng đôi", "Phòng gia đình", "Phòng VIP"]
-            current_type = str(selected["room_type"])
-            new_type = e2.selectbox("Loại phòng", types, index=types.index(current_type) if current_type in types else 0)
-            new_price = e3.number_input("Giá / đêm (VNĐ)", min_value=0, value=int(selected["price"]), step=50000)
-            status_options = ["Trống", "Đã đặt", "Đang sử dụng", "Đang dọn dẹp", "Bảo trì"]
-            current_status = str(selected["status"])
-            new_status = st.selectbox("Trạng thái phòng", status_options, index=status_options.index(current_status) if current_status in status_options else 0)
-            save_room = st.form_submit_button("💾 Lưu thay đổi")
-        if save_room:
-            try:
-                execute("UPDATE rooms SET room_number=?, room_type=?, price=?, status=? WHERE id=?",
-                        (new_number.strip(), new_type, new_price, new_status, chosen_id))
-                st.success("Đã cập nhật phòng.")
-                st.rerun()
-            except sqlite3.IntegrityError:
-                st.error("Số phòng đã được sử dụng bởi phòng khác.")
-        if st.button("🗑️ Xóa phòng đang chọn", type="secondary"):
-            count = query("SELECT COUNT(*) AS n FROM bookings WHERE room_id=?", (chosen_id,)).iloc[0]["n"]
-            if count:
-                st.error("Không thể xóa phòng đã có lịch sử đặt phòng.")
-            else:
-                execute("DELETE FROM rooms WHERE id=?", (chosen_id,))
-                st.success("Đã xóa phòng.")
-                st.rerun()
+        fig2 = px.bar(
+            room_type,
+            x="Room Type",
+            y="Number",
+            title="Số lượng phòng theo loại"
+        )
 
-with tabs[2]:
-    st.subheader("Tạo đặt phòng mới")
-    available_rooms = query("SELECT * FROM rooms WHERE status NOT IN ('Bảo trì','Đang dọn dẹp') ORDER BY room_number")
-    if available_rooms.empty:
-        st.warning("Chưa có phòng phù hợp. Hãy thêm phòng trước.")
-    else:
-        room_options = {
-            f"{r['room_number']} | {r['room_type']} | {float(r['price']):,.0f} đ/đêm ({r['status']})": int(r["id"])
-            for _, r in available_rooms.iterrows()
-        }
-        with st.form("booking_form", clear_on_submit=True):
-            guest_name = st.text_input("Họ và tên khách")
-            phone = st.text_input("Số điện thoại")
-            room_label = st.selectbox("Chọn phòng", list(room_options.keys()))
-            c1, c2, c3 = st.columns(3)
-            check_in = c1.date_input("Ngày nhận phòng", value=date.today(), min_value=date.today())
-            check_out = c2.date_input("Ngày trả phòng", value=date.today() + timedelta(days=1), min_value=date.today() + timedelta(days=1))
-            guests = c3.number_input("Số khách", min_value=1, max_value=20, value=1)
-            submit_booking = st.form_submit_button("✅ Tạo đặt phòng", use_container_width=True)
-            if submit_booking:
-                if not guest_name.strip() or not phone.strip():
-                    st.error("Vui lòng nhập họ tên và số điện thoại.")
-                elif check_out <= check_in:
-                    st.error("Ngày trả phòng phải sau ngày nhận phòng.")
-                else:
-                    room_id = room_options[room_label]
-                    room_row = available_rooms[available_rooms["id"] == room_id].iloc[0]
-                    nights = (check_out - check_in).days
-                    total = nights * float(room_row["price"])
-                    # Kiểm tra trùng lịch phòng
-                    overlap = query("""
-                        SELECT COUNT(*) AS n FROM bookings
-                        WHERE room_id=? AND status IN ('Đã đặt','Đang ở')
-                          AND NOT (check_out <= ? OR check_in >= ?)
-                    """, (room_id, check_in.isoformat(), check_out.isoformat())).iloc[0]["n"]
-                    if overlap:
-                        st.error("Phòng đã có đặt phòng trùng thời gian. Vui lòng chọn phòng hoặc ngày khác.")
-                    else:
-                        execute("""INSERT INTO bookings(guest_name,phone,room_id,check_in,check_out,guests,total,status)
-                                   VALUES(?,?,?,?,?,?,?,'Đã đặt')""",
-                                (guest_name.strip(), phone.strip(), room_id, check_in.isoformat(),
-                                 check_out.isoformat(), int(guests), total))
-                        st.success(f"Đã tạo đặt phòng. Tổng tiền dự kiến: {total:,.0f} đ ({nights} đêm).")
-                        st.rerun()
+        st.plotly_chart(
+            fig2,
+            use_container_width=True
+        )
 
-with tabs[3]:
-    st.subheader("Danh sách khách hàng và đặt phòng")
-    all_bookings = query("""
-        SELECT b.id, b.guest_name AS 'Khách hàng', b.phone AS 'Số điện thoại',
-               r.room_number AS 'Phòng', r.room_type AS 'Loại phòng',
-               b.check_in AS 'Ngày nhận', b.check_out AS 'Ngày trả',
-               b.guests AS 'Số khách', b.total AS 'Tổng tiền', b.status AS 'Trạng thái'
-        FROM bookings b JOIN rooms r ON b.room_id = r.id
-        ORDER BY b.id DESC
-    """)
-    if all_bookings.empty:
-        st.info("Chưa có thông tin khách hàng.")
-    else:
-        search = st.text_input("Tìm theo tên khách, số điện thoại hoặc số phòng")
-        filtered = all_bookings.copy()
-        if search.strip():
-            mask = filtered.astype(str).apply(lambda col: col.str.contains(search.strip(), case=False, na=False)).any(axis=1)
-            filtered = filtered[mask]
-        st.dataframe(filtered.drop(columns=["id"]), use_container_width=True, hide_index=True)
+    st.markdown("---")
 
-        st.markdown("### Cập nhật trạng thái đặt phòng")
-        booking_map = {
-            f"#{int(r['id'])} — {r['Khách hàng']} — phòng {r['Phòng']} ({r['Ngày nhận']} → {r['Ngày trả']})": int(r["id"])
-            for _, r in all_bookings.iterrows()
-        }
-        selected_booking_label = st.selectbox("Chọn lượt đặt phòng", list(booking_map.keys()))
-        selected_booking_id = booking_map[selected_booking_label]
-        current_booking_status = str(all_bookings[all_bookings["id"] == selected_booking_id].iloc[0]["Trạng thái"])
-        booking_statuses = ["Đã đặt", "Đang ở", "Đã trả", "Đã hủy"]
-        with st.form("booking_status_form"):
-            new_booking_status = st.selectbox(
-                "Trạng thái mới", booking_statuses,
-                index=booking_statuses.index(current_booking_status) if current_booking_status in booking_statuses else 0
+    st.markdown("### 📋 Tình trạng phòng hiện tại")
+
+    display_rooms = rooms[
+        [
+            "Room",
+            "Room Type",
+            "Capacity",
+            "Price",
+            "Status",
+            "Housekeeping"
+        ]
+    ].copy()
+
+    display_rooms["Price"] = display_rooms["Price"].apply(
+        lambda x: f"{x:,.0f} VNĐ"
+    )
+
+    st.dataframe(
+        display_rooms,
+        use_container_width=True,
+        hide_index=True
+    )
+
+
+# ============================================================
+# QUẢN LÝ PHÒNG
+# ============================================================
+
+elif menu == "🛏️ Quản lý phòng":
+
+    st.markdown(
+        '<div class="section-title">🛏️ Quản lý phòng</div>',
+        unsafe_allow_html=True
+    )
+
+    col1, col2, col3 = st.columns(3)
+
+    with col1:
+        room_search = st.text_input(
+            "🔎 Tìm phòng",
+            placeholder="VD: 501"
+        )
+
+    with col2:
+        room_status_filter = st.selectbox(
+            "Trạng thái",
+            ["Tất cả", "Available", "Occupied", "Reserved", "Maintenance"]
+        )
+
+    with col3:
+        room_type_filter = st.selectbox(
+            "Loại phòng",
+            ["Tất cả", "Deluxe", "Premier", "Suite"]
+        )
+
+    filtered_rooms = rooms.copy()
+
+    if room_search:
+        filtered_rooms = filtered_rooms[
+            filtered_rooms["Room"]
+            .astype(str)
+            .str.contains(room_search)
+        ]
+
+    if room_status_filter != "Tất cả":
+        filtered_rooms = filtered_rooms[
+            filtered_rooms["Status"] == room_status_filter
+        ]
+
+    if room_type_filter != "Tất cả":
+        filtered_rooms = filtered_rooms[
+            filtered_rooms["Room Type"] == room_type_filter
+        ]
+
+    st.dataframe(
+        filtered_rooms,
+        use_container_width=True,
+        hide_index=True
+    )
+
+    st.markdown("---")
+
+    st.markdown("### ➕ Cập nhật trạng thái phòng")
+
+    col1, col2, col3 = st.columns(3)
+
+    with col1:
+        selected_room = st.selectbox(
+            "Chọn phòng",
+            rooms["Room"].tolist()
+        )
+
+    with col2:
+        new_status = st.selectbox(
+            "Trạng thái mới",
+            [
+                "Available",
+                "Occupied",
+                "Reserved",
+                "Maintenance"
+            ]
+        )
+
+    with col3:
+        new_hk_status = st.selectbox(
+            "Housekeeping",
+            [
+                "Clean",
+                "Dirty",
+                "Out of Order"
+            ]
+        )
+
+    if st.button(
+        "💾 Cập nhật phòng",
+        use_container_width=True
+    ):
+
+        idx = rooms.index[
+            rooms["Room"] == selected_room
+        ]
+
+        st.session_state.rooms.loc[
+            idx, "Status"
+        ] = new_status
+
+        st.session_state.rooms.loc[
+            idx, "Housekeeping"
+        ] = new_hk_status
+
+        st.success(
+            f"Đã cập nhật phòng {selected_room}!"
+        )
+
+        st.rerun()
+
+
+# ============================================================
+# QUẢN LÝ KHÁCH HÀNG
+# ============================================================
+
+elif menu == "👤 Quản lý khách hàng":
+
+    st.markdown(
+        '<div class="section-title">👤 Quản lý khách hàng</div>',
+        unsafe_allow_html=True
+    )
+
+    st.info(
+        "🖼️ Cột Image đã được tạo sẵn. "
+        "Bạn có thể thay đường dẫn bằng ảnh khách sau."
+    )
+
+    search_customer = st.text_input(
+        "🔎 Tìm khách hàng",
+        placeholder="Nhập tên, số điện thoại hoặc mã khách..."
+    )
+
+    customer_type = st.selectbox(
+        "Loại khách",
+        ["Tất cả", "VIP", "Regular"]
+    )
+
+    filtered_customers = customers.copy()
+
+    if search_customer:
+
+        mask = (
+            filtered_customers["Full Name"]
+            .str.contains(
+                search_customer,
+                case=False,
+                na=False
             )
-            update_booking = st.form_submit_button("Cập nhật trạng thái")
-        if update_booking:
-            execute("UPDATE bookings SET status=? WHERE id=?", (new_booking_status, selected_booking_id))
-            st.success("Đã cập nhật trạng thái đặt phòng.")
-            st.rerun()
+            |
+            filtered_customers["Phone"]
+            .str.contains(
+                search_customer,
+                case=False,
+                na=False
+            )
+            |
+            filtered_customers["Customer ID"]
+            .str.contains(
+                search_customer,
+                case=False,
+                na=False
+            )
+        )
 
-st.divider()
-st.caption("Lưu ý: Đây là ứng dụng mẫu phục vụ học tập. Doanh thu được tính từ các lượt 'Đang ở' và 'Đã trả'; tiền phòng tính theo số đêm × giá phòng.")
+        filtered_customers = filtered_customers[mask]
 
+    if customer_type != "Tất cả":
+        filtered_customers = filtered_customers[
+            filtered_customers["Customer Type"] == customer_type
+        ]
+
+    st.dataframe(
+        filtered_customers,
+        use_container_width=True,
+        hide_index=True
+    )
+
+    st.markdown("---")
+
+    st.markdown("### ➕ Thêm khách hàng")
+
+    with st.form("add_customer_form"):
+
+        col1, col2 = st.columns(2)
+
+        with col1:
+            customer_id = st.text_input(
+                "Mã khách hàng",
+                "CUS007"
+            )
+
+            full_name = st.text_input(
+                "Họ và tên"
+            )
+
+            phone = st.text_input(
+                "Số điện thoại"
+            )
+
+        with col2:
+
+            nationality = st.text_input(
+                "Quốc tịch",
+                "Vietnam"
+            )
+
+            email = st.text_input(
+                "Email"
+            )
+
+            ctype = st.selectbox(
+                "Loại khách",
+                ["Regular", "VIP"]
+            )
+
+        image_path = st.text_input(
+            "🖼️ Đường dẫn ảnh khách",
+            "images/guest_07.jpg"
+        )
+
+        submit = st.form_submit_button(
+            "➕ Thêm khách hàng",
+            use_container_width=True
+        )
+
+        if submit:
+
+            if not full_name or not phone:
+                st.error(
+                    "Vui lòng nhập họ tên và số điện thoại."
+                )
+
+            else:
+
+                new_customer = pd.DataFrame(
+                    [[
+                        customer_id,
+                        full_name,
+                        phone,
+                        nationality,
+                        email,
+                        ctype,
+                        image_path
+                    ]],
+                    columns=CUSTOMER_COLUMNS
+                )
+
+                st.session_state.customers = pd.concat(
+                    [
+                        st.session_state.customers,
+                        new_customer
+                    ],
+                    ignore_index=True
+                )
+
+                st.success(
+                    "Đã thêm khách hàng thành công!"
+                )
+
+                st.rerun()
+
+
+# ============================================================
+# QUẢN LÝ ĐẶT PHÒNG
+# ============================================================
+
+elif menu == "📅 Quản lý đặt phòng":
+
+    st.markdown(
+        '<div class="section-title">📅 Quản lý đặt phòng</div>',
+        unsafe_allow_html=True
+    )
+
+    col1, col2 = st.columns(2)
+
+    with col1:
+        booking_search = st.text_input(
+            "🔎 Tìm booking",
+            placeholder="BK001 / tên khách..."
+        )
+
+    with col2:
+        booking_status = st.selectbox(
+            "Trạng thái booking",
+            [
+                "Tất cả",
+                "Reserved",
+                "Checked-in",
+                "Checked-out",
+                "Cancelled"
+            ]
+        )
+
+    filtered_bookings = bookings.copy()
+
+    if booking_search:
+
+        mask = (
+            filtered_bookings["Booking ID"]
+            .str.contains(
+                booking_search,
+                case=False,
+                na=False
+            )
+            |
+            filtered_bookings["Customer"]
+            .str.contains(
+                booking_search,
+                case=False,
+                na=False
+            )
+        )
+
+        filtered_bookings = filtered_bookings[mask]
+
+    if booking_status != "Tất cả":
+
+        filtered_bookings = filtered_bookings[
+            filtered_bookings["Status"] == booking_status
+        ]
+
+    display_booking = filtered_bookings.copy()
+
+    display_booking["Check-in"] = display_booking[
+        "Check-in"
+    ].astype(str)
+
+    display_booking["Check-out"] = display_booking[
+        "Check-out"
+    ].astype(str)
+
+    display_booking["Total"] = (
+        display_booking["Nights"]
+        * display_booking["Price/Night"]
+    )
+
+    display_booking["Price/Night"] = display_booking[
+        "Price/Night"
+    ].apply(lambda x: f"{x:,.0f} VNĐ")
+
+    display_booking["Total"] = display_booking[
+        "Total"
+    ].apply(lambda x: f"{x:,.0f} VNĐ")
+
+    st.dataframe(
+        display_booking,
+        use_container_width=True,
+        hide_index=True
+    )
+
+    st.markdown("---")
+
+    st.markdown("### ➕ Tạo đặt phòng mới")
+
+    with st.form("booking_form"):
+
+        col1, col2, col3 = st.columns(3)
+
+        with col1:
+
+            new_booking_id = st.text_input(
+                "Booking ID",
+                "BK007"
+            )
+
+            customer_list = customers[
+                "Full Name"
+            ].tolist()
+
+            selected_customer = st.selectbox(
+                "Khách hàng",
+                customer_list
+            )
+
+        with col2:
+
+            available_room_list = rooms[
+                rooms["Status"] == "Available"
+            ]["Room"].tolist()
+
+            if available_room_list:
+
+                selected_room_booking = st.selectbox(
+                    "Phòng",
+                    available_room_list
+                )
+
+            else:
+
+                st.warning(
+                    "Không có phòng trống."
+                )
+
+                selected_room_booking = None
+
+        with col3:
+
+            check_in = st.date_input(
+                "Ngày check-in",
+                date.today()
+            )
+
+            check_out = st.date_input(
+                "Ngày check-out",
+                date.today() + timedelta(days=1)
+            )
+
+        submit_booking = st.form_submit_button(
+            "📅 Tạo booking",
+            use_container_width=True
+        )
+
+        if submit_booking:
+
+            if selected_room_booking is None:
+                st.error("Không có phòng để đặt.")
+
+            elif check_out <= check_in:
+                st.error(
+                    "Ngày check-out phải sau ngày check-in."
+                )
+
+            else:
+
+                customer_row = customers[
+                    customers["Full Name"]
+                    == selected_customer
+                ].iloc[0]
+
+                room_row = rooms[
+                    rooms["Room"]
+                    == selected_room_booking
+                ].iloc[0]
+
+                nights = (
+                    check_out - check_in
+                ).days
+
+                new_booking = pd.DataFrame(
+                    [[
+                        new_booking_id,
+                        customer_row["Customer ID"],
+                        selected_customer,
+                        selected_room_booking,
+                        room_row["Room Type"],
+                        check_in,
+                        check_out,
+                        nights,
+                        room_row["Price"],
+                        "Reserved"
+                    ]],
+                    columns=BOOKING_COLUMNS
+                )
+
+                st.session_state.bookings = pd.concat(
+                    [
+                        st.session_state.bookings,
+                        new_booking
+                    ],
+                    ignore_index=True
+                )
+
+                idx = st.session_state.rooms.index[
+                    st.session_state.rooms["Room"]
+                    == selected_room_booking
+                ]
+
+                st.session_state.rooms.loc[
+                    idx,
+                    "Status"
+                ] = "Reserved"
+
+                st.success(
+                    "Đã tạo booking thành công!"
+                )
+
+                st.rerun()
+
+
+# ============================================================
+# HOUSEKEEPING
+# ============================================================
+
+elif menu == "🧹 Housekeeping":
+
+    st.markdown(
+        '<div class="section-title">🧹 Housekeeping</div>',
+        unsafe_allow_html=True
+    )
+
+    col1, col2, col3 = st.columns(3)
+
+    with col1:
+        st.metric(
+            "Tổng phòng",
+            len(housekeeping)
+        )
+
+    with col2:
+        completed = len(
+            housekeeping[
+                housekeeping["Cleaning Status"]
+                == "Completed"
+            ]
+        )
+
+        st.metric(
+            "Đã hoàn thành",
+            completed
+        )
+
+    with col3:
+        pending = len(
+            housekeeping[
+                housekeeping["Cleaning Status"]
+                != "Completed"
+            ]
+        )
+
+        st.metric(
+            "Cần xử lý",
+            pending
+        )
+
+    st.markdown("---")
+
+    st.dataframe(
+        housekeeping,
+        use_container_width=True,
+        hide_index=True
+    )
+
+    st.markdown("---")
+
+    st.markdown("### 🧹 Cập nhật tình trạng vệ sinh")
+
+    col1, col2, col3 = st.columns(3)
+
+    with col1:
+
+        hk_room = st.selectbox(
+            "Phòng",
+            housekeeping["Room"].tolist()
+        )
+
+    with col2:
+
+        hk_status = st.selectbox(
+            "Trạng thái",
+            [
+                "Completed",
+                "In Progress",
+                "Pending",
+                "Maintenance"
+            ]
+        )
+
+    with col3:
+
+        hk_staff = st.text_input(
+            "Nhân viên",
+            "Lan"
+        )
+
+    if st.button(
+        "💾 Cập nhật Housekeeping",
+        use_container_width=True
+    ):
+
+        idx = housekeeping.index[
+            housekeeping["Room"] == hk_room
+        ]
+
+        st.session_state.housekeeping.loc[
+            idx,
+            "Cleaning Status"
+        ] = hk_status
+
+        st.session_state.housekeeping.loc[
+            idx,
+            "Assigned Staff"
+        ] = hk_staff
+
+        st.success(
+            f"Đã cập nhật Housekeeping phòng {hk_room}"
+        )
+
+        st.rerun()
+
+
+# ============================================================
+# DOANH THU
+# ============================================================
+
+elif menu == "💰 Doanh thu":
+
+    st.markdown(
+        '<div class="section-title">💰 Quản lý doanh thu</div>',
+        unsafe_allow_html=True
+    )
+
+    revenue_df = bookings.copy()
+
+    revenue_df["Revenue"] = (
+        revenue_df["Nights"]
+        * revenue_df["Price/Night"]
+    )
+
+    total_revenue = revenue_df["Revenue"].sum()
+
+    average_booking = revenue_df["Revenue"].mean()
+
+    total_nights = revenue_df["Nights"].sum()
+
+    col1, col2, col3 = st.columns(3)
+
+    with col1:
+        st.metric(
+            "💰 Tổng doanh thu",
+            f"{total_revenue:,.0f} VNĐ"
+        )
+
+    with col2:
+        st.metric(
+            "📅 Tổng số đêm",
+            f"{total_nights} đêm"
+        )
+
+    with col3:
+        st.metric(
+            "🧾 Doanh thu TB/booking",
+            f"{average_booking:,.0f} VNĐ"
+        )
+
+    st.markdown("---")
+
+    st.markdown("### 📊 Doanh thu theo loại phòng")
+
+    revenue_by_type = (
+        revenue_df
+        .groupby("Room Type")["Revenue"]
+        .sum()
+        .reset_index()
+    )
+
+    fig = px.bar(
+        revenue_by_type,
+        x="Room Type",
+        y="Revenue",
+        text_auto=".2s",
+        title="Doanh thu theo loại phòng"
+    )
+
+    st.plotly_chart(
+        fig,
+        use_container_width=True
+    )
+
+    st.markdown("### 📋 Chi tiết doanh thu")
+
+    display_revenue = revenue_df[
+        [
+            "Booking ID",
+            "Customer",
+            "Room",
+            "Room Type",
+            "Nights",
+            "Revenue",
+            "Status"
+        ]
+    ].copy()
+
+    display_revenue["Revenue"] = display_revenue[
+        "Revenue"
+    ].apply(lambda x: f"{x:,.0f} VNĐ")
+
+    st.dataframe(
+        display_revenue,
+        use_container_width=True,
+        hide_index=True
+    )
+
+
+# ============================================================
+# FOOTER
+# ============================================================
+
+st.markdown("---")
+
+st.caption(
+    "🏨 Hotel Management System | "
+    "Demo application built with Streamlit"
+)
